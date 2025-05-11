@@ -1,0 +1,28 @@
+# 忽略pycache
+__pycache__/
+# 忽略所有的pyc文件
+*.pyc
+# 忽略所有的pyo文件
+*.pyo
+# 忽略所有的pyd文件
+*.pyd
+# 忽略所有的egg-info文件
+*.egg-info/
+# 忽略所有的egg文件
+*.egg
+# 忽略所有的whl文件
+*.whl
+# 忽略所有的dist文件
+dist/
+# 忽略所有的build文件
+build/
+# 忽略所有的log文件
+*.log
+# 忽略所有的sqlite3文件
+*.sqlite3
+# 忽略所有的db文件
+*.db
+# 忽略所有的csv文件
+*.csv
+# 忽略所有的venv文件
+venv/
