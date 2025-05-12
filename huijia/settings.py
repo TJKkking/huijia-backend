@@ -11,7 +11,7 @@ https://docs.djangoproject.com/en/3.2/ref/settings/
 """
 
 from pathlib import Path
-
+import os
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -28,6 +28,18 @@ DEBUG = True
 ALLOWED_HOSTS = []
 
 AUTH_USER_MODEL = "core.User"
+
+if os.getenv("GITHUB_ACTIONS") == "true" or os.getenv("CI") == "true":
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.getenv('POSTGRES_DB', 'test_db'),
+            'USER': os.getenv('POSTGRES_USER', 'test_user'),
+            'PASSWORD': os.getenv('POSTGRES_PASSWORD', 'test_pass'),
+            'HOST': 'localhost',
+            'PORT': '5432',
+        }
+    }
 
 # Application definition
 
