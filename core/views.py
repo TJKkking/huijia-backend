@@ -99,6 +99,11 @@ class PostViewSet(viewsets.ModelViewSet):
     ordering_fields = ['created_at', 'updated_at']
     ordering = ['-created_at']
 
+    def get_permissions(self):
+        if self.action in ['like', 'favorite']:
+            return [permissions.IsAuthenticated()]
+        return super().get_permissions()
+
     def get_queryset(self):
         queryset = Post.objects.all()
 

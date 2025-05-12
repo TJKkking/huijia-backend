@@ -29,5 +29,5 @@ api_v1_patterns = [
 
 # Root URL patterns
 urlpatterns = [
-    path('api/v1/', include((api_v1_patterns, 'api_v1'), namespace='api_v1')),
+    path('', include((api_v1_patterns, 'api_v1'), namespace='api_v1')),
 ] 
