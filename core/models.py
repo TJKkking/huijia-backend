@@ -18,15 +18,23 @@ class User(AbstractUser):
         ("其他", "其他"),
         ("保密", "保密"),
     ], blank=True)
-    phone = models.CharField("手机号", max_length=15, blank=True, unique=True)
+    # phone = models.CharField("手机号", max_length=15, blank=True, unique=True)
+    phone = models.CharField("手机号", max_length=15, blank=True)
     is_phone_verified = models.BooleanField("手机号已验证", default=False)
 
-    openid = models.CharField("微信 OpenID", max_length=128, unique=True, blank=True, null=True, db_index=True)
+    openid = models.CharField("微信 OpenID", max_length=128, blank=True, null=True, db_index=True)
+    unionid = models.CharField("微信 unionid", max_length=64, blank=True, null=True)
+
 
     # 认证用户才有学号/院系
+    email = models.EmailField(blank=True, null=True)
     student_id = models.CharField("学号", max_length=20, blank=True)
     department = models.CharField("院系", max_length=50, blank=True)
     is_verified_user = models.BooleanField("已认证用户", default=False)
+    verification_method = models.CharField(
+        choices=[('email','邮箱'),('idcard','学生证')],
+        max_length=10, blank=True, null=True
+    )
     verification_submitted_at = models.DateTimeField("认证提交时间", blank=True, null=True)
     verification_approved_at = models.DateTimeField("认证审核时间", blank=True, null=True)
 
@@ -252,3 +260,22 @@ class Notification(models.Model):
         if self.is_orphan():
             self.is_read = True
             self.save()
+
+class EmailVerification(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='email_codes')
+    email = models.EmailField()
+    code = models.CharField(max_length=6)         # 数字验证码
+    sent_at = models.DateTimeField(auto_now_add=True)
+    is_used = models.BooleanField(default=False)
+
+    class Meta:
+        indexes = [models.Index(fields=['email']), models.Index(fields=['code'])]
+
+
+class StudentIDUpload(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='id_uploads')
+    image = models.ImageField(upload_to='student_ids/')  
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+    STATUS_CHOICES = [('pending','待审核'),('approved','通过'),('rejected','拒绝')]
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='pending')
+    review_note = models.TextField(blank=True, null=True)  # 管理员审核备注

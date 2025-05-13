@@ -3,7 +3,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.conf import settings
 from .models import (
     User, Category, Tag, Post, Comment, 
-    Action, Conversation, PrivateMessage, Notification
+    Action, Conversation, PrivateMessage, Notification, StudentIDUpload
 )
 import logging
 
@@ -219,3 +219,15 @@ class NotificationSerializer(serializers.ModelSerializer):
                 'content_preview': obj.target.content[:50]
             }
         return None 
+
+class StudentIDUploadSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = StudentIDUpload
+        fields = ['id', 'image', 'uploaded_at', 'status']
+        read_only_fields = ['id', 'uploaded_at', 'status']
+
+    def create(self, validated_data):
+        return StudentIDUpload.objects.create(
+            user=self.context['request'].user,
+            **validated_data
+        )
