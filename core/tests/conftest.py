@@ -3,6 +3,9 @@ from rest_framework.test import APIClient
 from django.urls import reverse
 from core.models import User
 from core.tests.factories import UserFactory
+from django.conf import settings as django_settings
+from django.core.files.storage import InMemoryStorage
+from unittest.mock import MagicMock 
 
 pytestmark = pytest.mark.django_db
 
@@ -11,8 +14,11 @@ def api_client():
     return APIClient()
 
 @pytest.fixture
-def test_user():
-    return UserFactory()
+def test_user(db):
+    user = UserFactory()
+    user.is_verified_user = True
+    user.save()
+    return user
 
 @pytest.fixture
 def authenticated_client(api_client, test_user):
