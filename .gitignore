@@ -26,3 +26,5 @@ build/
 *.csv
 # 忽略所有的venv文件
 venv/
+.env
+core/tests/osstest.py
