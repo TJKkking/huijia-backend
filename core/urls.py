@@ -5,6 +5,7 @@ from . import views
 
 # Create a router and register our viewsets with it
 router = DefaultRouter()
+
 router.register(r'users', views.UserViewSet, basename='user')
 router.register(r'categories', views.CategoryViewSet, basename='category')
 router.register(r'tags', views.TagViewSet, basename='tag')
@@ -22,6 +23,9 @@ conversations_router.register(r'messages', views.PrivateMessageViewSet, basename
 
 # API v1 URL patterns
 api_v1_patterns = [
+    path('wx/login/', views.WXLoginView.as_view(), name='wx-login'),
+    path('me/', views.MeView.as_view(), name='me'),
+    path('auth/upload-idcard/', views.UploadStudentIDView.as_view(), name='upload-idcard'),  
     path('', include(router.urls)),
     path('', include(posts_router.urls)),
     path('', include(conversations_router.urls)),

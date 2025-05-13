@@ -7,43 +7,152 @@ from django.contrib.contenttypes.models import ContentType
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 import logging
+import requests
+import uuid
+import os
+from datetime import datetime
+from django.conf import settings
+from django.contrib.auth import get_user_model
+from rest_framework.views import APIView
+from rest_framework.exceptions import AuthenticationFailed
+from rest_framework.permissions import IsAuthenticated
+from rest_framework_simplejwt.tokens import RefreshToken
 from .models import (
     User, Category, Tag, Post, Comment,
-    Action, Conversation, PrivateMessage, Notification
+    Action, Conversation, PrivateMessage, Notification, StudentIDUpload
 )
 from .serializers import (
     UserSerializer, CategorySerializer, TagSerializer,
     PostSerializer, CommentSerializer, ActionSerializer,
     ConversationSerializer, PrivateMessageSerializer,
-    NotificationSerializer
+    NotificationSerializer, StudentIDUploadSerializer
+)
+from .permissions import (
+    IsRegistered,
+    IsAuthenticatedAndVerified,
+    IsOwnerOrReadOnly,
+    IsSelfOrAdmin
 )
 
 logger = logging.getLogger(__name__)
+User = get_user_model()
 
-class IsSelfOrAdmin(permissions.BasePermission):
-    """
-    Custom permission to only allow users to edit their own profile,
-    or admins to edit any profile.
-    """
-    def has_object_permission(self, request, view, obj):
-        return obj == request.user or request.user.is_staff
+WX_APPID = getattr(settings, "WECHAT_APP_ID", "your_appid")
+WX_SECRET = getattr(settings, "WECHAT_APP_SECRET", "your_secret")
 
-class IsOwnerOrReadOnly(permissions.BasePermission):
-    """
-    Custom permission to only allow owners of an object to edit it.
-    """
-    def has_object_permission(self, request, view, obj):
-        if request.method in permissions.SAFE_METHODS:
-            return True
+# 封装：生成随机用户名
+def generate_username():
+    return "wxuser_" + uuid.uuid4().hex[:10]
 
-        # For different models, check different owner fields
-        if isinstance(obj, Notification):
-            return obj.recipient == request.user
-        elif hasattr(obj, 'author'):
-            return obj.author == request.user
-        return False
+# 封装：调用微信接口换 openid + session_key
+def get_wechat_session_info(code):
+    url = "https://api.weixin.qq.com/sns/jscode2session"
+    params = {
+        'appid': WX_APPID,
+        'secret': WX_SECRET,
+        'js_code': code,
+        'grant_type': 'authorization_code'
+    }
+    try:
+        resp = requests.get(url, params=params, timeout=5)
+        resp.raise_for_status()
+        return resp.json()
+    except requests.exceptions.Timeout:
+        raise AuthenticationFailed("请求微信超时")
+    except requests.exceptions.RequestException as e:
+        raise AuthenticationFailed(f"请求微信失败：{str(e)}")
 
-class UserViewSet(viewsets.ModelViewSet):
+# 封装：签发 JWT 并返回过期时间
+def generate_jwt_token_for_user(user):
+    refresh = RefreshToken.for_user(user)
+    access = refresh.access_token
+    return {
+        'refresh': str(refresh),
+        'access': str(access),
+        'access_expires': datetime.fromtimestamp(access['exp']).isoformat()
+    }
+
+class WXLoginView(APIView):
+    permission_classes = []  
+
+    def post(self, request, *args, **kwargs):
+        code = request.data.get('code')
+        if not code:
+            return Response({'error': 'Code is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        wx_data = get_wechat_session_info(code)
+        openid = wx_data.get('openid')
+        session_key = wx_data.get('session_key')
+        unionid = wx_data.get('unionid')
+
+        if not openid:
+            return Response({
+                'error': wx_data.get('errmsg', '未获取到openid'),
+                'detail': wx_data
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        nickname_from_frontend = request.data.get('nickName')
+        avatar_from_frontend = request.data.get('avatarUrl')
+
+        try:
+            user, created = User.objects.get_or_create(
+                openid=openid,
+                defaults={
+                    'username': openid,
+                    'nickname': nickname_from_frontend or f"微信用户_{openid[-4:]}",
+                    'avatar': avatar_from_frontend or settings.DEFAULT_AVATAR_URL,
+                    # 'unionid': unionid
+                }
+            )
+
+            if not created:
+                update_fields = []
+                if nickname_from_frontend and not user.nickname:
+                    user.nickname = nickname_from_frontend
+                    update_fields.append('nickname')
+                if avatar_from_frontend and not user.avatar:
+                    user.avatar = avatar_from_frontend
+                    update_fields.append('avatar')
+                if unionid and not user.unionid:
+                    user.unionid = unionid
+                    update_fields.append('unionid')
+                if update_fields:
+                    user.save(update_fields=update_fields)
+
+            logger.info(f"User {user.id} login via WeChat: openid={openid}")
+
+        except Exception as e:
+            logger.error(f"User account creation/login failed: {str(e)}")
+            return Response({'error': f'User account processing failed: {str(e)}'}, status=500)
+
+        tokens = generate_jwt_token_for_user(user)
+        user_data = UserSerializer(user, context={'request': request}).data
+
+        return Response({
+            'access': tokens['access'],
+            'refresh': tokens['refresh'],
+            'access_expires': tokens['access_expires'],
+            'user': user_data
+        }, status=200)
+
+# 当前用户信息接口
+class MeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        data = UserSerializer(user, context={'request': request}).data
+        return Response(data, status=200)
+
+class BaseViewSet(viewsets.ModelViewSet):
+    def get_permissions(self):
+        # DEBUG 时绕过所有权限，直接放行
+        if settings.DEBUG:
+            return [permissions.AllowAny()]
+        # 否则走正常逻辑
+        return super().get_permissions()
+
+class UserViewSet(BaseViewSet):
     queryset = User.objects.all()
     serializer_class = UserSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -67,7 +176,7 @@ class UserViewSet(viewsets.ModelViewSet):
             serializer = self.get_serializer(request.user)
         return Response(serializer.data)
 
-class CategoryViewSet(viewsets.ModelViewSet):
+class CategoryViewSet(BaseViewSet):
     queryset = Category.objects.all()
     serializer_class = CategorySerializer
     permission_classes = [permissions.IsAuthenticatedOrReadOnly]
@@ -79,7 +188,7 @@ class CategoryViewSet(viewsets.ModelViewSet):
             return [permissions.IsAdminUser()]
         return [permissions.IsAuthenticatedOrReadOnly()]
 
-class TagViewSet(viewsets.ModelViewSet):
+class TagViewSet(BaseViewSet):
     queryset = Tag.objects.all()
     serializer_class = TagSerializer
     permission_classes = [permissions.IsAuthenticatedOrReadOnly]
@@ -91,9 +200,9 @@ class TagViewSet(viewsets.ModelViewSet):
             return [permissions.IsAdminUser()]
         return [permissions.IsAuthenticatedOrReadOnly()]
 
-class PostViewSet(viewsets.ModelViewSet):
+class PostViewSet(BaseViewSet):
     serializer_class = PostSerializer
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly, IsOwnerOrReadOnly]
+    # permission_classes = [permissions.IsAuthenticatedOrReadOnly, IsOwnerOrReadOnly]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['title', 'content']
     ordering_fields = ['created_at', 'updated_at']
@@ -179,10 +288,24 @@ class PostViewSet(viewsets.ModelViewSet):
             'status': 'unfavorited' if not favorited else 'favorited',
             'post': serializer.data
         })
+    def get_permissions(self):
+        # 发帖、更新、删除：必须登录且已认证
+        if self.action in ['create']:
+            return [IsAuthenticatedAndVerified()]
 
-class CommentViewSet(viewsets.ModelViewSet):
+        elif self.action in ['update', 'partial_update', 'destroy']:
+            return [IsAuthenticatedAndVerified(), IsOwnerOrReadOnly()]
+
+        # 点赞/收藏：必须登录（注册用户）
+        elif self.action in ['like', 'favorite']:
+            return [IsRegistered()]
+
+        # 浏览列表/详情：任何人都能看
+        return [permissions.AllowAny()]
+
+class CommentViewSet(BaseViewSet):
     serializer_class = CommentSerializer
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly, IsOwnerOrReadOnly]
+    # permission_classes = [permissions.IsAuthenticatedOrReadOnly, IsOwnerOrReadOnly]
     filter_backends = [filters.OrderingFilter]
     ordering_fields = ['created_at']
     ordering = ['-created_at']
@@ -200,9 +323,21 @@ class CommentViewSet(viewsets.ModelViewSet):
     def perform_update(self, serializer):
         serializer.save()  # Don't update author on update
 
-class ActionViewSet(viewsets.ModelViewSet):
+    def get_permissions(self):
+        # 发布评论：必须登录（注册用户）
+        if self.action == 'create':
+            return [IsRegistered()]
+
+        # 修改/删除评论：只能评论的作者本人
+        if self.action in ['update', 'partial_update', 'destroy']:
+            return [permissions.IsAuthenticated(), IsOwnerOrReadOnly()]
+
+        # 浏览评论：任何人都能看
+        return [permissions.AllowAny()]
+
+class ActionViewSet(BaseViewSet):
     serializer_class = ActionSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    # permission_classes = [permissions.IsAuthenticated]
     http_method_names = ['get', 'post']  # Only allow GET and POST
 
     def get_queryset(self):
@@ -211,7 +346,11 @@ class ActionViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
 
-class ConversationViewSet(viewsets.ModelViewSet):
+    def get_permissions(self):
+        # 点赞 & 收藏操作：必须登录（注册用户）
+        return [permissions.IsAuthenticated(), IsRegistered()]
+
+class ConversationViewSet(BaseViewSet):
     serializer_class = ConversationSerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [filters.OrderingFilter]
@@ -264,7 +403,7 @@ class ConversationViewSet(viewsets.ModelViewSet):
         ).update(is_read=True)
         return Response({'status': 'all messages marked as read'})
 
-class PrivateMessageViewSet(viewsets.ModelViewSet):
+class PrivateMessageViewSet(BaseViewSet):
     serializer_class = PrivateMessageSerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [filters.OrderingFilter]
@@ -315,9 +454,9 @@ class PrivateMessageViewSet(viewsets.ModelViewSet):
             status=status.HTTP_403_FORBIDDEN
         )
 
-class NotificationViewSet(viewsets.ModelViewSet):
+class NotificationViewSet(BaseViewSet):
     serializer_class = NotificationSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    # permission_classes = [permissions.IsAuthenticated]
     filter_backends = [filters.OrderingFilter]
     ordering_fields = ['created_at']
     ordering = ['-created_at']
@@ -337,3 +476,21 @@ class NotificationViewSet(viewsets.ModelViewSet):
         notification.is_read = True
         notification.save()
         return Response({'status': 'marked as read'})
+
+    def get_permissions(self):
+        # 所有通知操作：必须登录（注册用户）
+        return [permissions.IsAuthenticated(), IsRegistered()]
+
+class UploadStudentIDView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        serializer = StudentIDUploadSerializer(data=request.data, context={'request': request})
+        if serializer.is_valid():
+            instance = serializer.save()
+            return Response({
+                'id': instance.id,
+                'image_url': instance.image.url,
+                'status': instance.status
+            }, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
